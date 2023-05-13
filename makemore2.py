@@ -72,6 +72,20 @@ for i in range(max_steps):
     indices = randint(0,Xtr.shape[0],(batch_size,), generator=g)
     Xb, Yb = Xtr[indices],Ytr[indices]
 
+    #forward pass
+    emb = C[Xb]
+    embcat = emb.view(emb.shape[0], -1)
+
+    #Linear Layer
+    hpreact = embcat @ W1
+    #BatchNorm Layer
+    bnmeani = hpreact.mean(0, keepdim=True)
+    bnstdi = hpreact.std(0, keepdim=True)
+    hpreact = bngain * (hpreact - bnmeani) / bnstdi + bnbias
+    with torch.no_grad():
+        bnmean_running = 0.999 * bnmean_running + 0.001 * bnmeani
+        bnstd_running = 0.999 * bnstd_running + 0.001 * bnstdi
+
 
 
 
