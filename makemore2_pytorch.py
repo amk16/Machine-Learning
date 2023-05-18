@@ -2,6 +2,8 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
 words = open('names.txt', 'r').read().splitlines()
 
@@ -44,23 +46,24 @@ Xte,  Yte  = build_dataset(words[n2:])     # 10%
 g = torch.Generator().manual_seed(2147483647)
 class Linear:
     def __init__(self,fan_in,fan_out,bias=True):
-        self.weights = torch.randn((fan_in,fan_out), generator=g)
+        self.weight = torch.randn((fan_in,fan_out), generator=g)
         self.bias = torch.randn(fan_in) if bias else None
 
     def __call__(self, input):
-        self.output = self.weights @ input 
+        self.output = input @ self.weight 
         if self.bias is not None:
            self.output += self.bias
         return self.output
     
     def parameters(self):
-       self.parameters= [self.weights] + ([] if self.bias is None else [self.bias])
+       self.parameters= [self.weight] + ([] if self.bias is None else [self.bias])
        return self.parameters
     
 class BatchNorm1d:
-    def __init__(self,dim,eps=1e-5,momentum=0.1):
+    def __init__(self,dim,eps=1e-5,momentum=0.1,training=True):
        self.eps= eps
        self.momentum = momentum
+       self.training = training
        #parameters
        self.gamma = torch.ones(dim)
        self.beta = torch.zeros(dim)
@@ -78,14 +81,14 @@ class BatchNorm1d:
             mini_batch_mean = self.running_mean
             batch_variance = self.running_var
         inputhat = (input - mini_batch_mean) / torch.sqrt(batch_variance + self.eps)
-        self.output = (self.gamma * inputhat) +self.beta
+        self.output = self.gamma * inputhat +self.beta
 
         #update buffers
         if self.training:
             with torch.no_grad():
                self.running_mean = (1-self.momentum)* self.running_mean + self.momentum * mini_batch_mean
                self.running_var = (1-self.momentum)* self.running_var + self.momentum * batch_variance
-        self.output
+        return self.output
     
     def parameters(self):
        return [self.gamma,self.beta]
@@ -140,13 +143,15 @@ for i in range(max_steps):
   # forward pass
   emb = C[Xb] # embed the characters into vectors
   x = emb.view(emb.shape[0], -1) # concatenate the vectors
+  
   for layer in layers:
+    
     x = layer(x)
   loss = F.cross_entropy(x, Yb) # loss function
   
   # backward pass
   for layer in layers:
-    layer.out.retain_grad() # AFTER_DEBUG: would take out retain_graph
+    layer.output.retain_grad() # AFTER_DEBUG: would take out retain_graph
   for p in parameters:
     p.grad = None
   loss.backward()
@@ -171,7 +176,7 @@ plt.figure(figsize=(20, 4)) # width and height of the plot
 legends = []
 for i, layer in enumerate(layers[:-1]): # note: exclude the output layer
   if isinstance(layer, Tanh):
-    t = layer.out
+    t = layer.output
     print('layer %d (%10s): mean %+.2f, std %.2f, saturated: %.2f%%' % (i, layer.__class__.__name__, t.mean(), t.std(), (t.abs() > 0.97).float().mean()*100))
     hy, hx = torch.histogram(t, density=True)
     plt.plot(hx[:-1].detach(), hy.detach())
@@ -184,7 +189,7 @@ plt.figure(figsize=(20, 4)) # width and height of the plot
 legends = []
 for i, layer in enumerate(layers[:-1]): # note: exclude the output layer
   if isinstance(layer, Tanh):
-    t = layer.out.grad
+    t = layer.output.grad
     print('layer %d (%10s): mean %+f, std %e' % (i, layer.__class__.__name__, t.mean(), t.std()))
     hy, hx = torch.histogram(t, density=True)
     plt.plot(hx[:-1].detach(), hy.detach())
@@ -214,4 +219,27 @@ for i,p in enumerate(parameters):
 plt.plot([0, len(ud)], [-3, -3], 'k') # these ratios should be ~1e-3, indicate on plot
 plt.legend(legends)
 
+g = torch.Generator().manual_seed(2147483647 + 10)
+
+for _ in range(20):
     
+    out = []
+    context = [0] * block_size # initialize with all ...
+    while True:
+      # forward pass the neural net
+      emb = C[torch.tensor([context])] # (1,block_size,n_embd)
+      x = emb.view(emb.shape[0], -1) # concatenate the vectors
+      for layer in layers:
+        x = layer(x)
+      logits = x
+      probs = F.softmax(logits, dim=1)
+      # sample from the distribution
+      ix = torch.multinomial(probs, num_samples=1, generator=g).item()
+      # shift the context window and track the samples
+      context = context[1:] + [ix]
+      out.append(ix)
+      # if we sample the special '.' token, break
+      if ix == 0:
+        break
+    
+    print(''.join(itos[i] for i in out))
